@@ -22,6 +22,7 @@ from paddle.fluid.dygraph.base import to_variable
 import nets
 import reader
 from utils import ArgumentGroup
+from utils import get_cards
 
 parser = argparse.ArgumentParser(__doc__)
 model_g = ArgumentGroup(parser, "model", "model configuration and paths.")
@@ -133,21 +134,22 @@ def train():
                 epoch=args.epoch,
                 shuffle=False)
         if args.model_type == 'cnn_net':
-            model = nets.CNN("cnn_net", args.vocab_size, args.batch_size,
+            model = nets.CNN( args.vocab_size, args.batch_size,
                              args.padding_size)
         elif args.model_type == 'bow_net':
-            model = nets.BOW("bow_net", args.vocab_size, args.batch_size,
+            model = nets.BOW( args.vocab_size, args.batch_size,
                              args.padding_size)
         elif args.model_type == 'gru_net':
-            model = nets.GRU("gru_net", args.vocab_size, args.batch_size,
+            model = nets.GRU( args.vocab_size, args.batch_size,
                              args.padding_size)
         elif args.model_type == 'bigru_net':
-            model = nets.BiGRU("bigru_net", args.vocab_size, args.batch_size,
+            model = nets.BiGRU( args.vocab_size, args.batch_size,
                              args.padding_size)
-        sgd_optimizer = fluid.optimizer.Adagrad(learning_rate=args.lr)
+        sgd_optimizer = fluid.optimizer.Adagrad(learning_rate=args.lr,parameter_list=model.parameters())
         steps = 0
         total_cost, total_acc, total_num_seqs = [], [], []
         gru_hidden_data = np.zeros((args.batch_size, 128), dtype='float32')
+        ce_time, ce_infor = [], []
         for eop in range(args.epoch):
             time_begin = time.time()
             for batch_id, data in enumerate(train_data_generator()):
@@ -162,7 +164,7 @@ def train():
                                    'constant',
                                    constant_values=(args.vocab_size))
                             for x in data
-                        ]).astype('int64').reshape(-1, 1))
+                        ]).astype('int64').reshape(-1))
                     label = to_variable(
                         np.array([x[1] for x in data]).astype('int64').reshape(
                             args.batch_size, 1))
@@ -186,6 +188,8 @@ def train():
                                np.sum(total_cost) / np.sum(total_num_seqs),
                                np.sum(total_acc) / np.sum(total_num_seqs),
                                args.skip_steps / used_time))
+                        ce_time.append(used_time)
+                        ce_infor.append(np.sum(total_acc) / np.sum(total_num_seqs))
                         total_cost, total_acc, total_num_seqs = [], [], []
                         time_begin = time.time()
 
@@ -203,11 +207,11 @@ def train():
                                        'constant',
                                        constant_values=(args.vocab_size))
                                 for x in eval_data
-                            ]).astype('int64').reshape(1, -1)
+                            ]).astype('int64').reshape(-1)
                             eval_label = to_variable(
                                 np.array([x[1] for x in eval_data]).astype(
                                     'int64').reshape(args.batch_size, 1))
-                            eval_doc = to_variable(eval_np_doc.reshape(-1, 1))
+                            eval_doc = to_variable(eval_np_doc)
                             eval_avg_cost, eval_prediction, eval_acc = model(
                                 eval_doc, eval_label)
                             eval_np_mask = (
@@ -247,6 +251,17 @@ def train():
                 if enable_profile:
                     print('save profile result into /tmp/profile_file')
                     return
+        if args.ce:
+            card_num = get_cards()
+            _acc = 0
+            _time = 0
+            try:
+                _time = ce_time[-1]
+                _acc = ce_infor[-1]
+            except:
+                print("ce info error")
+            print("kpis\ttrain_duration_card%s\t%s" % (card_num, _time))
+            print("kpis\ttrain_acc_card%s\t%f" % (card_num, _acc))
 
 
 def infer():
@@ -262,16 +277,16 @@ def infer():
             epoch=args.epoch,
             shuffle=False)
         if args.model_type == 'cnn_net':
-            model_infer = nets.CNN("cnn_net", args.vocab_size, args.batch_size,
+            model_infer = nets.CNN( args.vocab_size, args.batch_size,
                                    args.padding_size)
         elif args.model_type == 'bow_net':
-            model_infer = nets.BOW("bow_net", args.vocab_size, args.batch_size,
+            model_infer = nets.BOW( args.vocab_size, args.batch_size,
                                    args.padding_size)
         elif args.model_type == 'gru_net':
-            model_infer = nets.GRU("gru_net", args.vocab_size, args.batch_size,
+            model_infer = nets.GRU( args.vocab_size, args.batch_size,
                                    args.padding_size)
         elif args.model_type == 'bigru_net':
-            model_infer = nets.BiGRU("bigru_net", args.vocab_size, args.batch_size,
+            model_infer = nets.BiGRU( args.vocab_size, args.batch_size,
                                    args.padding_size)
         print('Do inferring ...... ')
         restore, _ = fluid.load_dygraph(args.checkpoints)
@@ -288,8 +303,8 @@ def infer():
                                        'constant',
                                        constant_values=(args.vocab_size))
                                 for x in data
-            ]).astype('int64').reshape(-1, 1)
-            doc = to_variable(np_doc.reshape(-1, 1))
+            ]).astype('int64').reshape(-1)
+            doc = to_variable(np_doc)
             label = to_variable(
                 np.array([x[1] for x in data]).astype('int64').reshape(
                     args.batch_size, 1))

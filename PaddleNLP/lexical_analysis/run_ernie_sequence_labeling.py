@@ -34,7 +34,7 @@ import paddle.fluid as fluid
 
 import creator
 import utils
-sys.path.append("..")
+sys.path.append("../shared_modules/")
 from models.representation.ernie import ErnieConfig
 from models.model_check import check_cuda
 from models.model_check import check_version
@@ -116,11 +116,11 @@ def do_train(args):
                 feed_list=train_ret['feed_list'],
                 model="ernie",
                 place=place)
-
+            
+            clip = fluid.clip.GradientClipByGlobalNorm(clip_norm=1.0)
             optimizer = fluid.optimizer.Adam(
-                learning_rate=args.base_learning_rate)
-            fluid.clip.set_gradient_clip(
-                clip=fluid.clip.GradientClipByGlobalNorm(clip_norm=1.0))
+                learning_rate=args.base_learning_rate, 
+                grad_clip=clip)
             optimizer.minimize(train_ret["avg_cost"])
 
     lower_mem, upper_mem, unit = fluid.contrib.memory_usage(
@@ -188,15 +188,16 @@ def do_train(args):
 
             if steps % args.save_steps == 0:
                 save_path = os.path.join(args.model_save_dir,
-                                         "step_" + str(steps))
+                                         "step_" + str(steps), "checkpoint")
                 print("\tsaving model as %s" % (save_path))
-                fluid.io.save_persistables(exe, save_path, train_program)
+                fluid.save(train_program, save_path)
 
             if steps % args.validation_steps == 0:
                 evaluate(exe, test_program, test_pyreader, train_ret)
 
-    save_path = os.path.join(args.model_save_dir, "step_" + str(steps))
-    fluid.io.save_persistables(exe, save_path, train_program)
+    save_path = os.path.join(args.model_save_dir, "step_" + str(steps),
+                             "checkpoint")
+    fluid.save(train_program, save_path)
 
 
 def do_eval(args):

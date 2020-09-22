@@ -36,7 +36,7 @@ import sys
 if sys.version[0] == '2':
     reload(sys)
     sys.setdefaultencoding("utf-8")
-sys.path.append('../')
+sys.path.append('../shared_modules/')
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
@@ -60,7 +60,7 @@ def profile_context(profile=True, profiler_path='/tmp/paddingrnn.profile'):
 
 
 def get_current_model_para(train_prog, train_exe):
-    param_list = train_prog.block(0).all_parameters()
+    param_list = train_prog.all_parameters()
     param_name_list = [p.name for p in param_list]
 
     vals = {}
@@ -73,7 +73,7 @@ def get_current_model_para(train_prog, train_exe):
 
 def save_para_npz(train_prog, train_exe):
     print("begin to save model to model_base")
-    param_list = train_prog.block(0).all_parameters()
+    param_list = train_prog.all_parameters()
     param_name_list = [p.name for p in param_list]
 
     vals = {}
@@ -119,7 +119,7 @@ def main():
     main_program = fluid.Program()
     startup_program = fluid.Program()
     if args.enable_ce:
-        startup_program.random_seed = SEED
+        startup_program.random_seed, main_program.random_seed = SEED, SEED
     with fluid.program_guard(main_program, startup_program):
         with fluid.unique_name.guard():
             res_vars = lm_model.lm_model(
@@ -154,6 +154,7 @@ def main():
     # define inference program
     inference_program = fluid.Program()
     inference_startup_program = fluid.Program()
+    inference_program.random_seed, inference_startup_program.radom_seed = SEED, SEED
     with fluid.program_guard(inference_program, inference_startup_program):
         with fluid.unique_name.guard():
             lm_model.lm_model(
@@ -178,7 +179,7 @@ def main():
             print(args.init_from_pretrain_model)
             raise Warning("The pretrained params do not exist.")
             return
-        fluid.load(main_program, args.init_from_pretrain_model)
+        fluid.load(main_program, args.init_from_pretrain_model, exe)
         print("finish initing model from pretrained params from %s" %
               (args.init_from_pretrain_model))
 
@@ -191,6 +192,12 @@ def main():
 
     build_strategy = fluid.BuildStrategy()
     build_strategy.fuse_all_optimizer_ops = True
+    try:
+        fluid.require_version(min_version='1.7.0')
+        build_strategy.enable_auto_fusion = args.enable_auto_fusion
+    except Exception as e:
+        logger.info("PaddlePaddle version 1.7.0 or higher is "
+                    "required when you want to enable fusion_group.")
 
     if args.parallel:
         train_program = fluid.compiler.CompiledProgram(
@@ -201,6 +208,7 @@ def main():
     else:
         train_program = fluid.compiler.CompiledProgram(main_program)
 
+    train_program.random_seed = SEED
     data_path = args.data_path
     print("begin to load data")
     ptb_data = reader.get_ptb_data(data_path)
@@ -438,32 +446,35 @@ def main():
                 print("ptblm\tlstm_language_model_%s_loss_card%d\t%s" %
                       (args.rnn_model, device_count, train_ppl[0]))
 
-            # NOTE(zjl): sometimes we have not enough data for eval if batch_size is large, i.e., 2100
-            # Just skip to avoid error
-            def is_valid_data(data, batch_size, num_steps):
-                data_len = len(data)
-                batch_len = data_len // batch_size
-                epoch_size = (batch_len - 1) // num_steps
-                return epoch_size >= 1
+            if not args.profile:
+                # NOTE(zjl): sometimes we have not enough data for eval if batch_size is large, i.e., 2100
+                # Just skip to avoid error
+                def is_valid_data(data, batch_size, num_steps):
+                    data_len = len(data)
+                    batch_len = data_len // batch_size
+                    epoch_size = (batch_len - 1) // num_steps
+                    return epoch_size >= 1
 
-            valid_data_valid = is_valid_data(valid_data, config.batch_size,
-                                             config.num_steps)
-            if valid_data_valid:
-                valid_ppl = eval(valid_data)
-                print("Valid ppl: %.5f" % valid_ppl[0])
-            else:
-                print(
-                    'WARNING: length of valid_data is {}, which is not enough for batch_size {} and num_steps {}'.
-                    format(
-                        len(valid_data), config.batch_size, config.num_steps))
+                valid_data_valid = is_valid_data(valid_data, config.batch_size,
+                                                 config.num_steps)
+                if valid_data_valid:
+                    valid_ppl = eval(valid_data)
+                    print("Valid ppl: %.5f" % valid_ppl[0])
+                else:
+                    print(
+                        'WARNING: length of valid_data is {}, which is not enough for batch_size {} and num_steps {}'.
+                        format(
+                            len(valid_data), config.batch_size,
+                            config.num_steps))
 
-            save_model_dir = os.path.join(args.save_model_dir, str(epoch_id))
-            if not os.path.exists(save_model_dir):
-                mkpath(save_model_dir)
-            save_model_dir = os.path.join(save_model_dir, 'params')
+                save_model_dir = os.path.join(args.save_model_dir,
+                                              str(epoch_id))
+                if not os.path.exists(save_model_dir):
+                    mkpath(save_model_dir)
+                save_model_dir = os.path.join(save_model_dir, 'params')
 
-            fluid.save(main_program, save_model_dir)
-            print("Saved model to: %s.\n" % save_model_dir)
+                fluid.save(main_program, save_model_dir)
+                print("Saved model to: %s.\n" % save_model_dir)
 
     with profile_context(args.profile, args.profiler_path):
         train()
@@ -474,3 +485,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

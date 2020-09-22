@@ -102,13 +102,16 @@ def validate(args,
     test_batch_time_record = []
     test_batch_metrics_record = []
     test_batch_id = 0
-    compiled_program = best_strategy_compiled(
-        args,
-        test_prog,
-        test_fetch_list[0],
-        exe,
-        mode="val",
-        share_prog=train_prog)
+    if int(os.environ.get('PADDLE_TRAINERS_NUM', 1)) > 1:
+        compiled_program = test_prog
+    else:
+        compiled_program = best_strategy_compiled(
+            args,
+            test_prog,
+            test_fetch_list[0],
+            exe,
+            mode="val",
+            share_prog=train_prog)
     for batch in test_iter:
         t1 = time.time()
         test_batch_metrics = exe.run(program=compiled_program,
@@ -203,9 +206,17 @@ def train(args):
     else:
         imagenet_reader = reader.ImageNetReader(0 if num_trainers > 1 else None)
         train_reader = imagenet_reader.train(settings=args)
-        places = place
-        if num_trainers <= 1 and args.use_gpu:
-            places = fluid.framework.cuda_places()
+        if args.use_gpu:
+            if num_trainers <= 1:
+                places = fluid.framework.cuda_places()
+            else:
+                places = place
+        else:
+            if num_trainers <= 1:
+                places = fluid.framework.cpu_places()
+            else:
+                places = place
+
         train_data_loader.set_sample_list_generator(train_reader, places)
 
         if args.validate:
@@ -223,6 +234,7 @@ def train(args):
         train_batch_id = 0
         train_batch_time_record = []
         train_batch_metrics_record = []
+        train_batch_time_print_step = []
 
         if not args.use_dali:
             train_iter = train_data_loader()
@@ -245,8 +257,19 @@ def train(args):
                 np.array(train_batch_metrics), axis=1)
             train_batch_metrics_record.append(train_batch_metrics_avg)
             if trainer_id == 0:
-                print_info("batch", train_batch_metrics_avg, train_batch_elapse,
-                           pass_id, train_batch_id, args.print_step)
+                if train_batch_id % args.print_step == 0:
+                    if len(train_batch_time_print_step) == 0:
+                        train_batch_time_print_step_avg = train_batch_elapse
+                    else:
+                        train_batch_time_print_step_avg = np.mean(
+                            train_batch_time_print_step)
+                    train_batch_time_print_step = []
+                    print_info("batch", train_batch_metrics_avg,
+                               train_batch_time_print_step_avg, pass_id,
+                               train_batch_id, args.print_step)
+                else:
+                    train_batch_time_print_step.append(train_batch_elapse)
+
                 sys.stdout.flush()
             train_batch_id += 1
             t1 = time.time()
@@ -277,7 +300,7 @@ def train(args):
             if args.use_dali:
                 test_iter.reset()
 
-        if pass_id % args.save_step == 0:
+        if trainer_id == 0 and pass_id % args.save_step == 0:
             save_model(args, exe, train_prog, pass_id)
 
 
